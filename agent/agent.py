@@ -287,7 +287,7 @@ class RandoAgent(Agent):
         # Grab the SOM infomration, and parse it into an actionset
         # we expect it to live inside of meta_data
         state_info: StateInfo = trajectory[-1]  # type: ignore[assignment]
-        obs = state_info["observation"][self.obs_modality]
+        obs = state_info["observation"]["text"]
 
         def parse_som(observation):
             # any line that looks like:
@@ -317,7 +317,7 @@ class RandoAgent(Agent):
         # randomly select an action from the action set
         action = random.choice(action_set)
 
-        return action
+        return create_id_based_action(action)
 
     def reset(self, test_config_file: str) -> None:
         pass
