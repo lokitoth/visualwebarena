@@ -33,7 +33,7 @@ agent_type=rando
 
 command="python run.py \
   --instruction_path agent/prompts/jsons/p_som_cot_id_actree_3s.json \
-  --result_dir ~/expresult/vewba/$run_name \
+  --result_dir ~/expresult/vweba/$run_name \
   --test_config_base_dir=config_files/vwa/test_shopping \
   --model gpt-4o --agent_type $agent_type \
   --action_set_tag som  --observation_type image_som \
