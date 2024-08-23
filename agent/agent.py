@@ -25,6 +25,7 @@ from llms import (
 )
 from llms.tokenizers import Tokenizer
 
+import random
 
 class Agent:
     """Base class for the agent"""
@@ -200,6 +201,128 @@ class PromptAgent(Agent):
     def reset(self, test_config_file: str) -> None:
         pass
 
+class RandoAgent(Agent):
+    """prompt-based agent that emits action given the history"""
+
+    @beartype
+    def __init__(
+        self,
+        action_set_tag: str,
+        lm_config: lm_config.LMConfig,
+        prompt_constructor: PromptConstructor,
+        captioning_fn = None,
+    ) -> None:
+        super().__init__()
+        self.lm_config = lm_config
+        self.prompt_constructor = prompt_constructor
+        self.action_set_tag = action_set_tag
+        self.captioning_fn = captioning_fn
+
+        # Check if the model is multimodal.
+        if ("gemini" in lm_config.model or "gpt-4" in lm_config.model and "vision" in lm_config.model) and type(prompt_constructor) == MultimodalCoTPromptConstructor:
+            self.multimodal_inputs = True
+        else:
+            self.multimodal_inputs = False
+
+    def set_action_set_tag(self, tag: str) -> None:
+        assert (tag == "som")
+        self.action_set_tag = tag
+
+    def _create_actions(self, actionable):
+        clickable = ["A", "BUTTON", "INPUT", "IMG", "INPUT", "SELECT" ]
+        editable = ["INPUT"]
+
+        action_set = []
+        action_set.append("scroll [down]")
+        action_set.append("scroll [up]")
+
+        # TODO: Ideally we should only include these if they are available
+        # But for now, we will include them all
+        action_set.append("go_back")
+        action_set.append("go_forward")
+
+        for id, type, desc in actionable:
+            ntype = str(type).upper()
+
+            if type in clickable:
+                action_set.append(f"click [{id}]")
+                action_set.append(f"hover [{id}]")
+
+            if type in editable:
+                action_set.append(f"type [{id}] [lorem ipsum dolor sit amet]")
+
+        return action_set
+
+
+    @beartype
+    def next_action(
+        self, trajectory: Trajectory, intent: str, meta_data: dict[str, Any], images: Optional[list[Image.Image]] = None,
+        output_response: bool = False
+    ) -> Action:
+        # Create page screenshot image for multimodal models.
+        if self.multimodal_inputs:
+            page_screenshot_arr = trajectory[-1]["observation"]["image"]
+            page_screenshot_img = Image.fromarray(
+                page_screenshot_arr
+            )  # size = (viewport_width, viewport_width)
+
+        # Caption the input image, if provided.
+        if images is not None and len(images) > 0:
+            if self.captioning_fn is not None:
+                image_input_caption = ""
+                for image_i, image in enumerate(images):
+                    if image_i == 0:
+                        image_input_caption += f'Input image {image_i+1}: "{self.captioning_fn([image])[0]}"'
+                    else:
+                        image_input_caption += f'input image {image_i+1}: "{self.captioning_fn([image])[0]}"'
+                    if len(images) > 1:
+                        image_input_caption += ", "
+                # Update intent to include captions of input images.
+                intent = f"{image_input_caption}\nIntent: {intent}"
+            elif not self.multimodal_inputs:
+                print(
+                    "WARNING: Input image provided but no image captioner available."
+                )
+
+        # Grab the SOM infomration, and parse it into an actionset
+        # we expect it to live inside of meta_data
+        state_info: StateInfo = trajectory[-1]  # type: ignore[assignment]
+        obs = state_info["observation"][self.obs_modality]
+
+        def parse_som(observation):
+            # any line that looks like:
+            #   [<id:text>] [<type:text>] [<desc:text>]
+            # should be parsed into the (id, type, desc) tuple
+            # and returned as a list of these tuples
+
+            # split the observation into lines
+            lines = observation.split("\n")
+
+            # parse each line
+            parsed_lines = []
+            for line in lines:
+                # parse out the tuple using regex
+                match = re.match(r"\[(\d+)\] \[(\w+)\] \[(.*)\]", line)
+                if match:
+                    parsed_lines.append(match.groups())
+
+            return parsed_lines
+
+        som_parse = parse_som(obs)
+
+        # filter out the non-actionable items (id = "", or type = "StaticText" (verify this))
+        actionable = [item for item in som_parse if item[0] != "" and item[1] != "StaticText"]
+        action_set = self._create_actions(actionable)
+
+        # randomly select an action from the action set
+        action = random.choice(action_set)
+
+        return action
+
+    def reset(self, test_config_file: str) -> None:
+        pass
+
+
 
 def construct_agent(args: argparse.Namespace, captioning_fn=None) -> Agent:
     llm_config = lm_config.construct_llm_config(args)
@@ -215,6 +338,19 @@ def construct_agent(args: argparse.Namespace, captioning_fn=None) -> Agent:
             args.instruction_path, lm_config=llm_config, tokenizer=tokenizer
         )
         agent = PromptAgent(
+            action_set_tag=args.action_set_tag,
+            lm_config=llm_config,
+            prompt_constructor=prompt_constructor,
+            captioning_fn=captioning_fn
+        )
+    elif args.agent_type == "rando":
+        with open(args.instruction_path) as f:
+            constructor_type = json.load(f)["meta_data"]["prompt_constructor"]
+        tokenizer = Tokenizer(args.provider, args.model)
+        prompt_constructor = eval(constructor_type)(
+            args.instruction_path, lm_config=llm_config, tokenizer=tokenizer
+        )
+        agent = RandoAgent(
             action_set_tag=args.action_set_tag,
             lm_config=llm_config,
             prompt_constructor=prompt_constructor,
